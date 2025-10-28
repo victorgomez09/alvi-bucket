@@ -38,6 +38,11 @@ S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY")
 S3_SECRET_KEY = os.getenv("S3_SECRET_KEY")
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 
+# Celery Configuration Options
+CELERY_TIMEZONE = "Europe/Madrid"
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = 30 * 60
+
 # Application definition
 
 INSTALLED_APPS = [

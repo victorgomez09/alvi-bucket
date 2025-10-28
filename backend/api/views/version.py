@@ -6,6 +6,8 @@ import requests
 import xml.etree.ElementTree as ET
 import logging
 
+from api.models.type import Type, Version
+
 # Set up logging for the service
 logger = logging.getLogger(__name__)
 
@@ -98,6 +100,19 @@ class VanillaVersions(views.APIView):
             key='versions', 
             filter_func=self._filter_vanilla
         )
+
+        try:
+            type = Type.objects.get(name="vanilla")
+        except Type.DoesNotExist:
+            type = Type(name="vanilla")
+            type.save()
+
+        for version_number in manifest:
+            if not version_number:
+                continue
+            if not Version.objects.filter(version_number=version_number, type=type).exists():
+                version = Version(version_number=version_number, type=type)
+                version.save()
     
         return Response(manifest, status=status.HTTP_200_OK) if manifest else Response("Vanilla versions unavailable")
     
