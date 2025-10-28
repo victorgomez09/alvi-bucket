@@ -6,32 +6,10 @@ import requests
 import xml.etree.ElementTree as ET
 import logging
 
-from api.models.type import Type, Version
+from api.models import Type, Version
 
 # Set up logging for the service
 logger = logging.getLogger(__name__)
-
-def _fetch_json(url, key=None, filter_func=None):
-        """Generic handler for JSON API calls."""
-        try:
-            response = requests.get(url, timeout=10)
-            response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
-            data = response.json()
-            
-            if key and key in data:
-                versions = data[key]
-                if filter_func:
-                    versions = filter_func(versions)
-                return versions
-            
-            return data
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching data from {url}: {e}")
-            return []
-        except json.JSONDecodeError:
-            logger.error(f"Failed to decode JSON from {url}")
-            return []
 
 def _fetch_xml_versions(url, server_name, limit=5):
     """Generic handler for Maven XML metadata API calls."""
@@ -81,40 +59,23 @@ def _fetch_xml_versions(url, server_name, limit=5):
     return versions
     
 class VanillaVersions(views.APIView):
-    URL_VANILLA = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
-    
-    @staticmethod
-    def _filter_vanilla(versions):
-        # Sort versions by releaseTime to ensure we get the absolute latest
-        release_versions = sorted(
-            [v for v in versions if v['type'] == 'release'],
-            key=lambda x: x['releaseTime'],
-            reverse=True
-        )
-        return [v['id'] for v in release_versions]
-
     def get(self, request):
         """Fetches the latest official stable Vanilla versions."""
-        manifest = _fetch_json(
-            self.URL_VANILLA, 
-            key='versions', 
-            filter_func=self._filter_vanilla
-        )
 
-        try:
-            type = Type.objects.get(name="vanilla")
-        except Type.DoesNotExist:
-            type = Type(name="vanilla")
-            type.save()
+        # try:
+        #     type = Type.objects.get(name="vanilla")
+        # except Type.DoesNotExist:
+        #     type = Type(name="vanilla")
+        #     type.save()
 
-        for version_number in manifest:
-            if not version_number:
-                continue
-            if not Version.objects.filter(version_number=version_number, type=type).exists():
-                version = Version(version_number=version_number, type=type)
-                version.save()
+        # for version_number in manifest:
+        #     if not version_number:
+        #         continue
+        #     if not Version.objects.filter(version_number=version_number, type=type).exists():
+        #         version = Version(version_number=version_number, type=type)
+        #         version.save()
     
-        return Response(manifest, status=status.HTTP_200_OK) if manifest else Response("Vanilla versions unavailable")
+        # return Response(manifest, status=status.HTTP_200_OK) if manifest else Response("Vanilla versions unavailable")
     
 class PaperVersions(views.APIView):
     URL_PAPER = "https://api.papermc.io/v2/projects/paper"
