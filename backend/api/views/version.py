@@ -47,26 +47,27 @@ def _fetch_xml_versions(url, server_name, limit=5):
             # Extract all versions and reverse to get latest first
             all_versions = [v.text for v in versions_element.findall('version')]
             
-            # Simple filtering: remove development/beta tags and get the latest
-            stable_versions = [
-                v for v in all_versions[::-1] 
-                if not any(tag in v.upper() for tag in ['SNAPSHOT', 'BETA', 'RC', 'MDC'])
-            ]
+            # # Simple filtering: remove development/beta tags and get the latest
+            # stable_versions = [
+            #     v for v in all_versions[::-1] 
+            #     if not any(tag in v.upper() for tag in ['SNAPSHOT', 'BETA', 'RC', 'MDC'])
+            # ]
 
-            # Extract a limited list of unique Minecraft versions
-            unique_mc_versions = []
-            mc_versions_set = set()
+            # # Extract a limited list of unique Minecraft versions
+            # unique_mc_versions = []
+            # mc_versions_set = set()
 
-            for full_version in stable_versions:
-                # The Minecraft version is typically the part before the first hyphen
-                mc_version = full_version.split('-')[0]
-                if mc_version not in mc_versions_set:
-                    unique_mc_versions.append(full_version)
-                    mc_versions_set.add(mc_version)
-                    if len(unique_mc_versions) >= limit:
-                        break
+            # for full_version in stable_versions:
+            #     # The Minecraft version is typically the part before the first hyphen
+            #     mc_version = full_version.split('-')[0]
+            #     if mc_version not in mc_versions_set:
+            #         unique_mc_versions.append(full_version)
+            #         mc_versions_set.add(mc_version)
+            #         if len(unique_mc_versions) >= limit:
+            #             break
             
-            versions = unique_mc_versions
+            # versions = unique_mc_versions
+            versions = all_versions
         
     except (requests.RequestException, requests.Timeout) as e:
         logger.error(f"Error fetching {server_name} data: {e}")
