@@ -1,22 +1,28 @@
 import requests
-import json
 import os
 from pathlib import Path
 import boto3
 from botocore.exceptions import ClientError
+import xml.etree.ElementTree as ET # New import for parsing Maven XML
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from django.conf import settings
 
-# --- MinecraftJarCache Class (Modified for API integration and Spigot removal) ---
+# --- MinecraftJarCache Class (Modified to add version listing) ---
 
 class MinecraftJarCache:
     MOJANG_VERSION_MANIFEST = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
     PAPERMC_API = "https://api.papermc.io/v2/projects/paper/"
+    
+    # Base URLs for Maven Repositories
     FORGE_MAVEN_BASE = "https://maven.minecraftforge.net/net/minecraftforge/forge/"
     NEOFORGE_MAVEN_BASE = "https://maven.neoforged.net/releases/net/neoforged/neoforge/"
+    
+    # Metadata XML paths for version listing (relative to base URL)
+    FORGE_METADATA_URL = "https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml"
+    NEOFORGE_METADATA_URL = "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml"
 
     def __init__(self, bucket_name: str, endpoint_url: str, access_key: str, secret_key: str):
         """Initializes the cache with S3/MinIO configuration and ensures the bucket exists."""
@@ -27,30 +33,25 @@ class MinecraftJarCache:
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
         )
-        self.local_cache_dir = Path("/tmp/jar_cache") # Use /tmp for ephemeral storage
+        self.local_cache_dir = Path("/tmp/jar_cache")
         self.local_cache_dir.mkdir(parents=True, exist_ok=True)
         self.version_manifest = None 
         
-        # --- NEW LOGIC: Check and Create Bucket ---
+        # Check and Create Bucket
         try:
-            # Check if the bucket exists using head_bucket
             self.s3_client.head_bucket(Bucket=self.bucket_name)
             print(f"S3 Bucket '{self.bucket_name}' already exists.")
         except ClientError as e:
             error_code = e.response['Error']['Code']
-            # MinIO/S3 returns a 404/NoSuchBucket error if the bucket is missing
             if error_code == '404' or error_code == 'NoSuchBucket':
                 try:
                     self.s3_client.create_bucket(Bucket=self.bucket_name)
                     print(f"S3 Bucket '{self.bucket_name}' created successfully.")
                 except ClientError as ce:
                     print(f"Failed to create S3 bucket '{self.bucket_name}': {ce}")
-                    # Re-raise if creation fails for other reasons (e.g., permissions)
                     raise
             else:
-                # Re-raise any other unexpected S3 connection/client errors
                 raise
-        # ------------------------------------------
         
     # --- Internal Utility Methods ---
 
@@ -60,8 +61,6 @@ class MinecraftJarCache:
             self.s3_client.upload_file(str(file_path), self.bucket_name, s3_key)
             return True
         except ClientError as e:
-            # Note: This is where the original NoSuchBucket error occurred, 
-            # but the fix in __init__ should prevent it now.
             print(f"S3 Upload Error for {s3_key}: {e}")
             return False
 
@@ -85,7 +84,7 @@ class MinecraftJarCache:
         local_temp_path.parent.mkdir(parents=True, exist_ok=True)
         
         try:
-            response = requests.get(url, stream=True, timeout=300) # 5 minute timeout
+            response = requests.get(url, stream=True, timeout=300)
             response.raise_for_status()
             
             with open(local_temp_path, 'wb') as f:
@@ -107,6 +106,7 @@ class MinecraftJarCache:
     # --- Platform-Specific Fetchers (Returning S3 key) ---
     
     def _get_vanilla_jar(self, version: str) -> str | None:
+        # Implementation remains the same...
         if self.version_manifest is None:
             try:
                 response = requests.get(self.MOJANG_VERSION_MANIFEST)
@@ -130,6 +130,7 @@ class MinecraftJarCache:
         return self._download_and_cache(server_download_url, "Vanilla", version, s3_key)
 
     def _get_papermc_jar(self, mc_version: str, build: str = 'latest') -> str | None:
+        # Implementation remains the same...
         version_url = f"{self.PAPERMC_API}versions/{mc_version}"
         try:
             version_data = requests.get(version_url).json()
@@ -149,13 +150,72 @@ class MinecraftJarCache:
         return self._download_and_cache(download_url, "PaperMC", version_string, s3_key)
         
     def _get_maven_jar(self, platform: str, version: str, maven_base_url: str) -> str | None:
-        jar_name = f"{platform.lower()}-{version}-installer.jar"
+        # Implementation remains the same...
+        jar_name = f"{platform.lower()}-{version}.jar"
         download_url = f"{maven_base_url}{version}/{jar_name}"
         s3_key = f"{platform.lower()}/{version}/{jar_name}"
         return self._download_and_cache(download_url, platform, version, s3_key)
 
+    # --- NEW: Version Listing Methods ---
+
+    def _get_maven_versions(self, metadata_url: str) -> list[str]:
+        """Fetches the maven-metadata.xml, parses it, and returns a list of versions."""
+        try:
+            response = requests.get(metadata_url, timeout=10)
+            response.raise_for_status()
+            
+            root = ET.fromstring(response.content)
+            
+            # Find the <versions> element within <versioning>
+            versioning = root.find('versioning')
+            if versioning is not None:
+                versions_element = versioning.find('versions')
+                if versions_element is not None:
+                    # Extract all text content from <version> tags
+                    versions = [v.text for v in versions_element.findall('version') if v.text]
+                    return versions
+            
+            return []
+            
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching Maven metadata from {metadata_url}: {e}")
+            return []
+        except ET.ParseError as e:
+            print(f"Error parsing Maven metadata XML: {e}")
+            return []
+
+
     # --- Public API Interface ---
     
+    def get_available_versions(self, platform: str) -> list[str]:
+        """Returns a list of available versions for the given platform."""
+        platform = platform.lower()
+        if platform == 'forge':
+            return self._get_maven_versions(self.FORGE_METADATA_URL)
+        elif platform == 'neoforge':
+            return self._get_maven_versions(self.NEOFORGE_METADATA_URL)
+        elif platform == 'paper':
+            # For Paper, we need to list Minecraft versions first (e.g., 1.20.1)
+            try:
+                response = requests.get(self.PAPERMC_API)
+                response.raise_for_status()
+                data = response.json()
+                return data.get('versions', [])
+            except requests.exceptions.RequestException as e:
+                print(f"Error fetching PaperMC versions: {e}")
+                return []
+        elif platform == 'vanilla':
+            if self.version_manifest is None:
+                try:
+                    response = requests.get(self.MOJANG_VERSION_MANIFEST)
+                    self.version_manifest = response.json()
+                except requests.exceptions.RequestException:
+                    return []
+            # Filter for release versions only
+            return [v['id'] for v in self.version_manifest.get('versions', []) if v['type'] == 'release']
+        else:
+            return []
+            
     def get_jar_s3_key(self, platform: str, version: str, build: str = 'latest') -> str | None:
         platform = platform.lower()
         if platform == 'vanilla':
@@ -167,7 +227,7 @@ class MinecraftJarCache:
         elif platform == 'neoforge':
             return self._get_maven_jar('NeoForge', version, self.NEOFORGE_MAVEN_BASE)
         else:
-            return None # Unsupported platform
+            return None
 
     def get_jar_direct_url(self, s3_key: str, expires_in: int = 3600) -> str:
         """Generates a secure, pre-signed URL for direct download."""
@@ -182,17 +242,12 @@ class MinecraftJarCache:
             print(f"Error generating pre-signed URL for {s3_key}: {e}")
             return ""
 
-# --- DRF View Implementation ---
+# --- DRF View Implementations ---
 
 class JarDownloadView(APIView):
     """
     API endpoint to request a Minecraft server JAR, ensuring it is cached 
     in S3/MinIO, and returning a pre-signed download URL.
-    
-    Expected Query Params:
-    - platform: [vanilla, paper, forge, neoforge] (Required)
-    - version: The Minecraft version (e.g., 1.20.1) (Required)
-    - build: Specific build number (Optional, defaults to 'latest' for Paper)
     """
     
     def get(self, request):
@@ -213,8 +268,6 @@ class JarDownloadView(APIView):
             }, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            # Initialize the cache using Django settings
-            # This call now ensures the S3 bucket exists before proceeding.
             cache = MinecraftJarCache(
                 bucket_name=settings.S3_BUCKET_NAME,
                 endpoint_url=settings.S3_ENDPOINT,
@@ -227,7 +280,6 @@ class JarDownloadView(APIView):
                 "error": "Server configuration error or failed to connect/create S3 bucket."
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # 1. Ensure the JAR is in the cache (downloads and uploads if missing)
         s3_key = cache.get_jar_s3_key(platform, version, build)
         
         if not s3_key:
@@ -235,7 +287,6 @@ class JarDownloadView(APIView):
                 "error": f"Could not find or cache the JAR for {platform} version {version}."
             }, status=status.HTTP_404_NOT_FOUND)
 
-        # 2. Generate the temporary, consumable URL (valid for 1 hour)
         download_url = cache.get_jar_direct_url(s3_key, expires_in=3600) 
         
         if not download_url:
@@ -243,11 +294,63 @@ class JarDownloadView(APIView):
                 "error": "Failed to generate a secure download URL."
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # 3. Return the success response
         return Response({
             "platform": platform,
             "version": version,
             "s3_key": s3_key,
             "download_url": download_url,
             "message": "Use the 'download_url' to consume the JAR directly from S3. Link is valid for 1 hour."
+        }, status=status.HTTP_200_OK)
+
+
+class JarVersionListView(APIView):
+    """
+    API endpoint to list available versions for a given platform.
+    
+    Expected Query Params:
+    - platform: [vanilla, paper, forge, neoforge] (Required)
+    """
+    
+    def get(self, request):
+        platform = request.query_params.get('platform')
+        
+        if not platform:
+            return Response({
+                "error": "Missing required 'platform' parameter.",
+                "example": "/api/jar/versions/?platform=forge"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        supported_platforms = ['vanilla', 'paper', 'forge', 'neoforge']
+        if platform.lower() not in supported_platforms:
+            return Response({
+                "error": f"Unsupported platform '{platform}'. Supported: {', '.join(supported_platforms)}"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            # Note: We don't strictly need S3 config for version listing, 
+            # but we initialize the cache object to reuse the logic.
+            cache = MinecraftJarCache(
+                bucket_name=settings.S3_BUCKET_NAME,
+                endpoint_url=settings.S3_ENDPOINT,
+                access_key=settings.S3_ACCESS_KEY,
+                secret_key=settings.S3_SECRET_KEY,
+            )
+        except Exception as e:
+            # Handle potential MinIO/S3 connection errors gracefully, though unlikely for version check
+            print(f"Cache Initialization Error: {e}")
+            pass # Continue to fetch versions regardless of S3 state
+
+        versions = cache.get_available_versions(platform)
+
+        if not versions:
+            return Response({
+                "platform": platform,
+                "versions": [],
+                "message": f"Could not retrieve any versions for {platform}. Check external API status."
+            }, status=status.HTTP_404_NOT_FOUND)
+            
+        return Response({
+            "platform": platform,
+            "count": len(versions),
+            "versions": versions,
         }, status=status.HTTP_200_OK)
